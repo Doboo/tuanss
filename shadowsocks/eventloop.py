@@ -1,29 +1,25 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-
-# Copyright (c) 2014 clowwindy
 #
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
+# Copyright 2013-2015 clowwindy
 #
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
 
 # from ssloop
 # https://github.com/clowwindy/ssloop
 
+from __future__ import absolute_import, division, print_function, \
+    with_statement
 
 import os
 import socket
@@ -31,6 +27,8 @@ import select
 import errno
 import logging
 from collections import defaultdict
+
+from shadowsocks import shell
 
 
 __all__ = ['EventLoop', 'POLL_NULL', 'POLL_IN', 'POLL_OUT', 'POLL_ERR',
@@ -100,7 +98,7 @@ class KqueueLoop(object):
                 results[fd] |= POLL_IN
             elif e.filter == select.KQ_FILTER_WRITE:
                 results[fd] |= POLL_OUT
-        return results.iteritems()
+        return results.items()
 
     def add_fd(self, fd, mode):
         self._fds[fd] = mode
@@ -154,6 +152,7 @@ class SelectLoop(object):
 
 class EventLoop(object):
     def __init__(self):
+        self._iterating = False
         if hasattr(select, 'epoll'):
             self._impl = EpollLoop()
             model = 'epoll'
@@ -168,7 +167,8 @@ class EventLoop(object):
                             'package')
         self._fd_to_f = {}
         self._handlers = []
-        self.stopping = False
+        self._ref_handlers = []
+        self._handlers_to_remove = []
         logging.debug('using event model: %s', model)
 
     def poll(self, timeout=None):
@@ -182,41 +182,55 @@ class EventLoop(object):
 
     def remove(self, f):
         fd = f.fileno()
-        self._fd_to_f[fd] = None
+        del self._fd_to_f[fd]
         self._impl.remove_fd(fd)
 
     def modify(self, f, mode):
         fd = f.fileno()
         self._impl.modify_fd(fd, mode)
 
-    def add_handler(self, handler):
+    def add_handler(self, handler, ref=True):
         self._handlers.append(handler)
+        if ref:
+            # when all ref handlers are removed, loop stops
+            self._ref_handlers.append(handler)
 
     def remove_handler(self, handler):
-        self._handlers.remove(handler)
+        if handler in self._ref_handlers:
+            self._ref_handlers.remove(handler)
+        if self._iterating:
+            self._handlers_to_remove.append(handler)
+        else:
+            self._handlers.remove(handler)
 
     def run(self):
-        while not self.stopping:
+        events = []
+        while self._ref_handlers:
             try:
                 events = self.poll(1)
             except (OSError, IOError) as e:
-                if errno_from_exception(e) == errno.EPIPE:
-                    # Happens when the client closes the connection
-                    logging.error('poll:%s', e)
-                    continue
+                if errno_from_exception(e) in (errno.EPIPE, errno.EINTR):
+                    # EPIPE: Happens when the client closes the connection
+                    # EINTR: Happens when received a signal
+                    # handles them as soon as possible
+                    logging.debug('poll:%s', e)
                 else:
                     logging.error('poll:%s', e)
                     import traceback
                     traceback.print_exc()
                     continue
+            self._iterating = True
             for handler in self._handlers:
                 # TODO when there are a lot of handlers
                 try:
                     handler(events)
                 except (OSError, IOError) as e:
-                    logging.error(e)
-                    import traceback
-                    traceback.print_exc()
+                    shell.print_exception(e)
+            if self._handlers_to_remove:
+                for handler in self._handlers_to_remove:
+                    self._handlers.remove(handler)
+                self._handlers_to_remove = []
+            self._iterating = False
 
 
 # from tornado
