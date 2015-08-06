@@ -18,6 +18,7 @@
 from __future__ import absolute_import, division, print_function, \
     with_statement
 
+import time
 import os
 import socket
 import struct
@@ -255,6 +256,7 @@ class DNSResolver(object):
         self._hostname_to_cb = {}
         self._cb_to_hostname = {}
         self._cache = lru_cache.LRUCache(timeout=300)
+        self._last_time = time.time()
         self._sock = None
         self._servers = None
         self._parse_resolv()
@@ -302,7 +304,7 @@ class DNSResolver(object):
         except IOError:
             self._hosts['localhost'] = '127.0.0.1'
 
-    def add_to_loop(self, loop):
+    def add_to_loop(self, loop, ref=False):
         if self._loop:
             raise Exception('already add to loop')
         self._loop = loop
@@ -310,8 +312,8 @@ class DNSResolver(object):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,
                                    socket.SOL_UDP)
         self._sock.setblocking(False)
-        loop.add(self._sock, eventloop.POLL_IN, self)
-        loop.add_periodic(self.handle_periodic)
+        loop.add(self._sock, eventloop.POLL_IN)
+        loop.add_handler(self.handle_events, ref=ref)
 
     def _call_callback(self, hostname, ip, error=None):
         callbacks = self._hostname_to_cb.get(hostname, [])
@@ -352,27 +354,30 @@ class DNSResolver(object):
                             self._call_callback(hostname, None)
                             break
 
-    def handle_event(self, sock, fd, event):
-        if sock != self._sock:
-            return
-        if event & eventloop.POLL_ERR:
-            logging.error('dns socket err')
-            self._loop.remove(self._sock)
-            self._sock.close()
-            # TODO when dns server is IPv6
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,
-                                       socket.SOL_UDP)
-            self._sock.setblocking(False)
-            self._loop.add(self._sock, eventloop.POLL_IN, self)
-        else:
-            data, addr = sock.recvfrom(1024)
-            if addr[0] not in self._servers:
-                logging.warn('received a packet other than our dns')
-                return
-            self._handle_data(data)
-
-    def handle_periodic(self):
-        self._cache.sweep()
+    def handle_events(self, events):
+        for sock, fd, event in events:
+            if sock != self._sock:
+                continue
+            if event & eventloop.POLL_ERR:
+                logging.error('dns socket err')
+                self._loop.remove(self._sock)
+                self._sock.close()
+                # TODO when dns server is IPv6
+                self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,
+                                           socket.SOL_UDP)
+                self._sock.setblocking(False)
+                self._loop.add(self._sock, eventloop.POLL_IN)
+            else:
+                data, addr = sock.recvfrom(1024)
+                if addr[0] not in self._servers:
+                    logging.warn('received a packet other than our dns')
+                    break
+                self._handle_data(data)
+            break
+        now = time.time()
+        if now - self._last_time > CACHE_SWEEP_INTERVAL:
+            self._cache.sweep()
+            self._last_time = now
 
     def remove_callback(self, callback):
         hostname = self._cb_to_hostname.get(callback)
@@ -425,9 +430,6 @@ class DNSResolver(object):
 
     def close(self):
         if self._sock:
-            if self._loop:
-                self._loop.remove_periodic(self.handle_periodic)
-                self._loop.remove(self._sock)
             self._sock.close()
             self._sock = None
 
@@ -435,7 +437,7 @@ class DNSResolver(object):
 def test():
     dns_resolver = DNSResolver()
     loop = eventloop.EventLoop()
-    dns_resolver.add_to_loop(loop)
+    dns_resolver.add_to_loop(loop, ref=True)
 
     global counter
     counter = 0
@@ -449,8 +451,8 @@ def test():
             print(result, error)
             counter += 1
             if counter == 9:
+                loop.remove_handler(dns_resolver.handle_events)
                 dns_resolver.close()
-                loop.stop()
         a_callback = callback
         return a_callback
 
