@@ -47,8 +47,7 @@ class ServerPool(object):
         self.dns_resolver = asyncdns.DNSResolver()
         self.mgr = asyncmgr.ServerMgr()
         self.tcp_servers_pool = {}
-        self.udp_servers_pool = {}
-        #20150329   
+        #self.udp_servers_pool = {}
 
         self.loop = eventloop.EventLoop()
         thread.start_new_thread(ServerPool._loop, (self.loop, self.dns_resolver, self.mgr))
@@ -105,12 +104,9 @@ class ServerPool(object):
                     tcp_server = tcprelay.TCPRelay(a_config, self.dns_resolver, False)
                     tcp_server.add_to_loop(self.loop)
                     self.tcp_servers_pool[port] = tcp_server
-                     #20150329  
-                    udp_server = udprelay.UDPRelay(a_config, self.dns_resolver, False)
-                    udp_server.add_to_loop(self.loop)
-                    self.udp_servers_pool.update({port: udp_server})
-                     #20150329  
-                     
+                    #udp_server = udprelay.UDPRelay(a_config, self.dns_resolver, False)
+                    #udp_server.add_to_loop(self.loop)
+                    #self.udp_servers_pool.update({port: udp_server})
                 except Exception, e:
                     logging.warn(e)
         return True
