@@ -1,7 +1,7 @@
 #Config
-MYSQL_HOST = '104.129.177.190'
+MYSQL_HOST = '172.96.133.191'
 MYSQL_PORT = 3306
-MYSQL_USER = 'guoke'
+MYSQL_USER = 'tuanss'
 MYSQL_PASS = 'guoke'
 MYSQL_DB = 'tuanDB'
 
